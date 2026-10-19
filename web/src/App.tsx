@@ -1,6 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
-import { loadComparison, type ComparisonRow, type Reason } from "./api";
-import { formatDelta, formatPrice, priceDirection } from "./format";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { bestInStockCompetitor } from "../../src/offer";
+import {
+  fetchCatalog,
+  repriceCatalog,
+  type CatalogProduct,
+  type PriceResult,
+  type Reason,
+} from "./api";
+import { draftMessage, readDraftNumber, type Draft } from "./draft";
+import { formatDelta, formatOfferPrice, formatPrice, priceDirection } from "./format";
 
 const REASON_LABEL: Record<Reason, string> = {
   UNDERCUT: "Дешевле конкурента",
@@ -17,40 +25,127 @@ interface Stats {
   none: number;
 }
 
-function countReasons(rows: ComparisonRow[]): Stats {
+function countReasons(results: PriceResult[]): Stats {
   return {
-    total: rows.length,
-    undercut: rows.filter((row) => row.reason === "UNDERCUT").length,
-    atMin: rows.filter((row) => row.reason === "AT_MIN").length,
-    atMax: rows.filter((row) => row.reason === "AT_MAX").length,
-    none: rows.filter((row) => row.reason === "NO_COMPETITORS").length,
+    total: results.length,
+    undercut: results.filter((result) => result.reason === "UNDERCUT").length,
+    atMin: results.filter((result) => result.reason === "AT_MIN").length,
+    atMax: results.filter((result) => result.reason === "AT_MAX").length,
+    none: results.filter((result) => result.reason === "NO_COMPETITORS").length,
   };
 }
 
+function draftsFrom(products: CatalogProduct[]): Draft[] {
+  return products.map((product) => ({
+    step: String(product.step),
+    minPrice: String(product.minPrice),
+  }));
+}
+
 export function App() {
-  const [rows, setRows] = useState<ComparisonRow[] | null>(null);
+  const [products, setProducts] = useState<CatalogProduct[] | null>(null);
+  const [results, setResults] = useState<PriceResult[] | null>(null);
+  const [drafts, setDrafts] = useState<Draft[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [pricing, setPricing] = useState(false);
+  const requestId = useRef(0);
 
-  const refresh = useCallback(async () => {
+  const quote = useCallback(async (nextProducts: CatalogProduct[]) => {
+    const id = requestId.current + 1;
+    requestId.current = id;
+    setPricing(true);
+
+    try {
+      const priced = await repriceCatalog(nextProducts);
+      if (requestId.current !== id) {
+        return;
+      }
+      setResults(priced);
+      setError(null);
+    } catch (caught) {
+      if (requestId.current !== id) {
+        return;
+      }
+      setError(caught instanceof Error ? caught.message : "Неизвестная ошибка");
+    } finally {
+      if (requestId.current === id) {
+        setPricing(false);
+      }
+    }
+  }, []);
+
+  const reload = useCallback(async () => {
+    const id = requestId.current + 1;
+    requestId.current = id;
     setLoading(true);
     setError(null);
 
     try {
-      setRows(await loadComparison());
+      const catalog = await fetchCatalog();
+      if (requestId.current !== id) {
+        return;
+      }
+      setProducts(catalog);
+      setDrafts(draftsFrom(catalog));
+      const priced = await repriceCatalog(catalog);
+      if (requestId.current !== id) {
+        return;
+      }
+      setResults(priced);
     } catch (caught) {
-      setRows(null);
+      if (requestId.current !== id) {
+        return;
+      }
+      setProducts(null);
+      setResults(null);
+      setDrafts([]);
       setError(caught instanceof Error ? caught.message : "Неизвестная ошибка");
     } finally {
-      setLoading(false);
+      if (requestId.current === id) {
+        setLoading(false);
+        setPricing(false);
+      }
     }
   }, []);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    void reload();
+  }, [reload]);
 
-  const stats = rows ? countReasons(rows) : null;
+  const editDraft = useCallback(
+    (index: number, field: keyof Draft, raw: string) => {
+      if (!products || !drafts[index]) {
+        return;
+      }
+
+      const nextDrafts = drafts.map((draft, draftIndex) =>
+        draftIndex === index ? { ...draft, [field]: raw } : draft,
+      );
+      setDrafts(nextDrafts);
+
+      const draft = nextDrafts[index];
+      const product = products[index];
+      if (!draft || !product || draftMessage(draft, product.maxPrice)) {
+        return;
+      }
+
+      const step = readDraftNumber(draft.step);
+      const minPrice = readDraftNumber(draft.minPrice);
+      if (step === null || minPrice === null) {
+        return;
+      }
+
+      const nextProducts = products.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, step, minPrice } : item,
+      );
+      setProducts(nextProducts);
+      void quote(nextProducts);
+    },
+    [drafts, products, quote],
+  );
+
+  const stats = results ? countReasons(results) : null;
 
   return (
     <>
@@ -66,11 +161,11 @@ export function App() {
           type="button"
           className="refresh"
           onClick={() => {
-            void refresh();
+            void reload();
           }}
           disabled={loading}
         >
-          {loading ? "Считаем…" : "Пересчитать"}
+          {loading ? "Считаем…" : "Сбросить"}
         </button>
       </header>
 
@@ -79,7 +174,8 @@ export function App() {
           <h1>Было / стало</h1>
           <p>
             Новая цена ставится на шаг ниже самого дешёвого конкурента в наличии
-            и не выходит за минимум и максимум продавца.
+            и не выходит за минимум и максимум. Шаг и минимум можно поменять —
+            таблица снова спросит API.
           </p>
         </section>
 
@@ -94,19 +190,30 @@ export function App() {
         ) : null}
 
         <section className="panel" aria-live="polite">
-          {loading && !rows ? <p className="status">Загружаем каталог и считаем цены…</p> : null}
+          {loading && !products ? (
+            <p className="status">Загружаем каталог и считаем цены…</p>
+          ) : null}
           {error ? (
             <div className="error">
               <p>{error}</p>
-              <button type="button" onClick={() => void refresh()}>
+              <button type="button" onClick={() => void reload()}>
                 Повторить
               </button>
             </div>
           ) : null}
-          {rows && rows.length === 0 ? (
+          {products && products.length === 0 ? (
             <p className="status">В каталоге нет товаров.</p>
           ) : null}
-          {rows && rows.length > 0 ? <PriceTable rows={rows} /> : null}
+          {products && results && products.length > 0 ? (
+            <PriceTable
+              products={products}
+              results={results}
+              drafts={drafts}
+              pricing={pricing}
+              disabled={loading}
+              onEdit={editDraft}
+            />
+          ) : null}
         </section>
 
         <dl className="legend">
@@ -116,11 +223,11 @@ export function App() {
           </div>
           <div>
             <dt>На минимуме</dt>
-            <dd>Ниже minPrice опускаться нельзя.</dd>
+            <dd>Ниже минимума опускаться нельзя.</dd>
           </div>
           <div>
             <dt>На максимуме</dt>
-            <dd>Выше maxPrice подниматься нельзя.</dd>
+            <dd>Выше максимума подниматься нельзя.</dd>
           </div>
           <div>
             <dt>Нет конкурентов</dt>
@@ -141,11 +248,28 @@ function Stat({ label, value }: { label: string; value: number }) {
   );
 }
 
-function PriceTable({ rows }: { rows: ComparisonRow[] }) {
+function PriceTable({
+  products,
+  results,
+  drafts,
+  pricing,
+  disabled,
+  onEdit,
+}: {
+  products: CatalogProduct[];
+  results: PriceResult[];
+  drafts: Draft[];
+  pricing: boolean;
+  disabled: boolean;
+  onEdit: (index: number, field: keyof Draft, raw: string) => void;
+}) {
   return (
     <div className="table-wrap">
+      <div className="panel-head">
+        <h2>Сравнение старой и новой цены</h2>
+        {pricing ? <span className="pending">Считаем новую цену…</span> : null}
+      </div>
       <table>
-        <caption>Сравнение старой и новой цены</caption>
         <thead>
           <tr>
             <th scope="col">SKU</th>
@@ -157,25 +281,90 @@ function PriceTable({ rows }: { rows: ComparisonRow[] }) {
               Новая цена
             </th>
             <th scope="col">Причина</th>
+            <th scope="col">Конкурент</th>
+            <th scope="col" className="num">
+              Шаг
+            </th>
+            <th scope="col" className="num">
+              Диапазон
+            </th>
           </tr>
         </thead>
         <tbody>
-          {rows.map((row) => {
-            const direction = priceDirection(row.oldPrice, row.newPrice);
+          {products.map((product, index) => {
+            const result = results[index];
+            const draft = drafts[index];
+            if (!result || !draft) {
+              return null;
+            }
+
+            const offer = bestInStockCompetitor(product);
+            const inStockCount = product.competitors.filter((competitor) => competitor.inStock).length;
+            const problem = draftMessage(draft, product.maxPrice);
+            const direction = priceDirection(result.oldPrice, result.newPrice);
 
             return (
-              <tr key={row.sku}>
-                <td className="sku">{row.sku}</td>
-                <td>{row.name}</td>
-                <td className="num">{formatPrice(row.oldPrice)}</td>
+              <tr key={product.sku}>
+                <td className="sku">{product.sku}</td>
+                <td>{product.name}</td>
+                <td className="num">{formatPrice(result.oldPrice)}</td>
                 <td className={`num price-${direction}`}>
-                  <span className="price">{formatPrice(row.newPrice)}</span>
-                  <span className="delta">{formatDelta(row.oldPrice, row.newPrice)}</span>
+                  <span className="price">{formatPrice(result.newPrice)}</span>
+                  <span className="delta">{formatDelta(result.oldPrice, result.newPrice)}</span>
                 </td>
                 <td>
-                  <span className={`pill pill-${row.reason}`} title={row.reason}>
-                    {REASON_LABEL[row.reason]}
+                  <span className={`pill pill-${result.reason}`} title={result.reason}>
+                    {REASON_LABEL[result.reason]}
                   </span>
+                </td>
+                <td>
+                  {offer ? (
+                    <>
+                      <span className="seller">{offer.seller}</span>
+                      <span className="delta">{formatOfferPrice(offer.price)}</span>
+                      {inStockCount > 1 ? (
+                        <span className="delta">ещё {inStockCount - 1} в наличии</span>
+                      ) : null}
+                    </>
+                  ) : (
+                    <span className="muted">Нет в наличии</span>
+                  )}
+                </td>
+                <td className="num">
+                  <input
+                    className="field"
+                    type="number"
+                    inputMode="decimal"
+                    step="any"
+                    min={0}
+                    aria-label={`Шаг для ${product.name}`}
+                    aria-invalid={problem !== null}
+                    disabled={disabled}
+                    value={draft.step}
+                    onChange={(event) => {
+                      onEdit(index, "step", event.target.value);
+                    }}
+                  />
+                </td>
+                <td className="num">
+                  <span className="range">
+                    <input
+                      className="field"
+                      type="number"
+                      inputMode="decimal"
+                      step="any"
+                      aria-label={`Минимум для ${product.name}`}
+                      aria-invalid={problem !== null}
+                      disabled={disabled}
+                      value={draft.minPrice}
+                      onChange={(event) => {
+                        onEdit(index, "minPrice", event.target.value);
+                      }}
+                    />
+                    <span className="range-sep">—</span>
+                    <span>{formatPrice(product.maxPrice)}</span>
+                  </span>
+                  {problem ? <span className="hint">{problem}</span> : null}
                 </td>
               </tr>
             );

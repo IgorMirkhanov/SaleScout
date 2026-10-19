@@ -7,13 +7,30 @@ export const REASONS = [
 
 export type Reason = (typeof REASONS)[number];
 
-export interface ComparisonRow {
+export interface Competitor {
+  seller: string;
+  price: number;
+  inStock: boolean;
+}
+
+export interface CatalogProduct {
   sku: string;
   name: string;
+  myPrice: number;
+  minPrice: number;
+  maxPrice: number;
+  step: number;
+  competitors: Competitor[];
+}
+
+export interface PriceResult {
+  sku: string;
   oldPrice: number;
   newPrice: number;
   reason: Reason;
 }
+
+const networkError = "Не удалось связаться с сервером. Запустите API командой npm run dev.";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -21,6 +38,40 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isReason(value: unknown): value is Reason {
   return typeof value === "string" && (REASONS as readonly string[]).includes(value);
+}
+
+function isCompetitor(value: unknown): value is Competitor {
+  return (
+    isRecord(value) &&
+    typeof value.seller === "string" &&
+    typeof value.price === "number" &&
+    Number.isFinite(value.price) &&
+    typeof value.inStock === "boolean"
+  );
+}
+
+function isCatalogProduct(value: unknown): value is CatalogProduct {
+  return (
+    isRecord(value) &&
+    typeof value.sku === "string" &&
+    typeof value.name === "string" &&
+    typeof value.myPrice === "number" &&
+    typeof value.minPrice === "number" &&
+    typeof value.maxPrice === "number" &&
+    typeof value.step === "number" &&
+    Array.isArray(value.competitors) &&
+    value.competitors.every(isCompetitor)
+  );
+}
+
+function isPriceResult(value: unknown): value is PriceResult {
+  return (
+    isRecord(value) &&
+    typeof value.sku === "string" &&
+    typeof value.oldPrice === "number" &&
+    typeof value.newPrice === "number" &&
+    isReason(value.reason)
+  );
 }
 
 function isErrorPayload(value: unknown): value is { error: string } {
@@ -40,67 +91,48 @@ async function readJson(response: Response): Promise<unknown> {
   return payload;
 }
 
-function toRow(product: unknown, result: unknown): ComparisonRow {
-  if (!isRecord(product) || !isRecord(result)) {
-    throw new Error("Неожиданный ответ сервера");
+export async function fetchCatalog(): Promise<CatalogProduct[]> {
+  let response: Response;
+
+  try {
+    response = await fetch("/products");
+  } catch {
+    throw new Error(networkError);
   }
 
-  if (
-    typeof product.sku !== "string" ||
-    typeof product.name !== "string" ||
-    typeof result.sku !== "string" ||
-    typeof result.oldPrice !== "number" ||
-    typeof result.newPrice !== "number" ||
-    !isReason(result.reason)
-  ) {
-    throw new Error("Неожиданный ответ сервера");
+  const payload = await readJson(response);
+
+  if (!Array.isArray(payload) || !payload.every(isCatalogProduct)) {
+    throw new Error("Неожиданный ответ каталога");
   }
 
-  if (product.sku !== result.sku) {
-    throw new Error("Ответ расчёта не совпал с каталогом");
-  }
-
-  return {
-    sku: product.sku,
-    name: product.name,
-    oldPrice: result.oldPrice,
-    newPrice: result.newPrice,
-    reason: result.reason,
-  };
+  return payload;
 }
 
-export async function loadComparison(): Promise<ComparisonRow[]> {
-  let productsResponse: Response;
+export async function repriceCatalog(products: CatalogProduct[]): Promise<PriceResult[]> {
+  let response: Response;
 
   try {
-    productsResponse = await fetch("/products");
-  } catch {
-    throw new Error("Не удалось связаться с сервером. Запустите API командой npm run dev.");
-  }
-
-  const products = await readJson(productsResponse);
-
-  if (!Array.isArray(products)) {
-    throw new Error("Каталог должен быть массивом");
-  }
-
-  let repriceResponse: Response;
-
-  try {
-    repriceResponse = await fetch("/reprice", {
+    response = await fetch("/reprice", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(products),
     });
   } catch {
-    throw new Error("Не удалось связаться с сервером. Запустите API командой npm run dev.");
+    throw new Error(networkError);
   }
 
-  const results = await readJson(repriceResponse);
+  const payload = await readJson(response);
 
-  if (!Array.isArray(results) || results.length !== products.length) {
+  if (!Array.isArray(payload) || payload.length !== products.length || !payload.every(isPriceResult)) {
     throw new Error("Неожиданный ответ расчёта");
   }
 
-  return results.map((result, index) => toRow(products[index], result));
+  payload.forEach((result, index) => {
+    if (result.sku !== products[index]?.sku) {
+      throw new Error("Ответ расчёта не совпал с каталогом");
+    }
+  });
+
+  return payload;
 }

@@ -111,7 +111,7 @@ input {
 }
 
 .page {
-  width: min(1120px, calc(100% - 2rem));
+  width: min(1360px, calc(100% - 2rem));
   margin: 1.5rem auto 3rem;
 }
 
@@ -158,6 +158,19 @@ input {
   overflow: hidden;
 }
 
+.panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.1rem 0.15rem;
+}
+
+.panel-head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
 .status,
 .error {
   padding: 1.25rem 1.2rem;
@@ -189,15 +202,64 @@ input {
 
 table {
   width: 100%;
-  min-width: 760px;
+  min-width: 1120px;
   border-collapse: collapse;
 }
 
-caption {
-  padding: 1rem 1.1rem 0.2rem;
-  caption-side: top;
-  text-align: left;
-  font-weight: 700;
+.pending,
+.hint,
+.muted {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.pending {
+  font-size: 0.85rem;
+}
+
+.seller,
+.hint {
+  display: block;
+}
+
+.hint {
+  margin-top: 0.35rem;
+  color: var(--up);
+  font-family: Manrope, "Segoe UI", sans-serif;
+  font-size: 0.75rem;
+  text-align: right;
+}
+
+.range {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+.range-sep {
+  color: var(--muted);
+}
+
+.field {
+  width: 7.2rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  padding: 0.35rem 0.45rem;
+  color: inherit;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.92rem;
+  text-align: right;
+}
+
+.field:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+.field[aria-invalid="true"] {
+  border-color: var(--up);
 }
 
 th,
@@ -224,6 +286,10 @@ tbody tr:hover {
 .num {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
+}
+
+.sku {
+  white-space: nowrap;
 }
 
 .num {

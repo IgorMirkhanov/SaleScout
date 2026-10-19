@@ -1,7 +1,16 @@
 const money = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 });
+const preciseMoney = new Intl.NumberFormat("ru-RU", {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 1,
+});
 
 export function formatPrice(value: number): string {
   return `${money.format(value)}\u00a0₸`;
+}
+
+export function formatOfferPrice(value: number): string {
+  const formatter = Number.isInteger(value) ? money : preciseMoney;
+  return `${formatter.format(value)}\u00a0₸`;
 }
 
 export function formatDelta(oldPrice: number, newPrice: number): string {
